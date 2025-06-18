@@ -16,7 +16,7 @@ EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12
 # --- Gemini API Configuration (SAFER METHOD) ---
 # ★★★ FIX 3: Load API Key from Environment Variables for Security ★★★
 # Replace with your actual key or load from environment variables for production
-GEMINI_API_KEY = "AIzaSyBvLOjOiY7QYaJoGe3FPb9C2MH5RAQIs3s"
+GEMINI_API_KEY = "API_KEY"
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable not set. Please set it before running.")
 genai.configure(api_key=GEMINI_API_KEY)
