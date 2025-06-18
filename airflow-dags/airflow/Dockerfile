@@ -9,4 +9,9 @@ RUN pip install ccxt==4.1.100 \
   Requests==2.31.0 \
   tqdm==4.66.2 \ 
   minio==7.2.7\
-  s3fs==2025.3.2
+  s3fs==2025.3.2\
+  FlagEmbedding\
+  peft\
+  sentence_transformers\
+  chromadb\
+  neo4j\

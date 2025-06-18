@@ -53,6 +53,8 @@ services:
       POSTGRES_DB: airflow
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 10s
@@ -240,8 +242,6 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
-
-
   minio:
     image: minio/minio:RELEASE.2022-01-08T03-11-54Z
     environment:
@@ -260,7 +260,51 @@ services:
     restart: always
     command: server /data --console-address ":9001"
 
+  chroma:
+    image: chromadb/chroma:latest # Or a specific version like 0.4.24
+    ports:
+      - "8000:8000" # Default port for ChromaDB HTTP server
+    volumes:
+      - chroma-data:/chroma # Mount a volume for persistent data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"] # Health check endpoint
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: always
+
+  chroma-admin-ui:
+    image: fengzhichao/chromadb-admin:latest # Or a specific version
+    ports:
+      - "3001:3001" # Access the UI on localhost:3001
+    environment:
+      # This environment variable tells chromadb-admin where your ChromaDB is
+      # 'chroma' is the service name in your docker-compose.yaml
+      # '8000' is the internal port of the chroma service
+      NEXT_PUBLIC_CHROMA_API_URL: "http://chroma:8000"
+    depends_on:
+      chroma:
+        condition: service_healthy
+    restart: always
+
+  neo4j:
+    image: neo4j:latest
+    volumes:
+        - /$HOME/neo4j/logs:/logs
+        - /$HOME/neo4j/config:/config
+        - /$HOME/neo4j/data:/data
+        - /$HOME/neo4j/plugins:/plugins
+    environment:
+        - NEO4J_AUTH=neo4j/your_password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    restart: always
+  
+
 
 volumes:
   postgres-db-volume:
   minio-data-volume:
+  chroma-data:
