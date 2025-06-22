@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  # --- RAG API Backend (FastAPI) ---
+  backend:
+    build: ./backend
+    container_name: rag_api_backend
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend:/app
+      - model_cache:/root/.cache/torch/sentence_transformers
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - CHROMA_HOST=host.docker.internal 
+      - CHROMA_PORT=8000
+    # depends_on:
+    #   - chroma # Only depends on Chroma now
+    networks:
+      - rag_network
+
+  # --- Next.js Frontend ---
+  frontend:
+    build: ./frontend
+    container_name: rag_frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    networks:
+      - rag_network
+
+  # chroma:
+  #   image: chromadb/chroma:latest # Or a specific version like 0.4.24
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - chroma-data:/chroma # Mount a volume for persistent data
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"] 
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 10s
+  #   restart: always
+
+  # chroma-admin-ui:
+  #   image: fengzhichao/chromadb-admin:latest # Or a specific version
+  #   ports:
+  #     - "3001:3001" # Access the UI on localhost:3001
+  #   environment:
+  #     # This environment variable tells chromadb-admin where your ChromaDB is
+  #     # 'chroma' is the service name in your docker-compose.yaml
+  #     # '8000' is the internal port of the chroma service
+  #     NEXT_PUBLIC_CHROMA_API_URL: "http://chroma:8000"
+  #   depends_on:
+  #     chroma:
+  #       condition: service_healthy
+  #   restart: always
+
+networks:
+  rag_network:
+    driver: bridge
+
+volumes:
+  # chroma-data:
+  model_cache:
