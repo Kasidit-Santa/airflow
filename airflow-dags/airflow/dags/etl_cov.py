@@ -23,19 +23,19 @@ import chromadb
 from chromadb.utils import embedding_functions
 
 # --- CKAN API Configuration ---
-API_KEY = "API_KEY"
+API_KEY = "API-KEY"  # Ensure this is correct and secure
 PACKAGE_ID = "8a956917-436d-4afd-a2d4-59e4dd8e906e"
 METADATA_URL = f"https://opend.data.go.th/get-ckan/package_show?id={PACKAGE_ID}"
 MINIO_BUCKET_NAME = "airflow-bucket-cov"
 
 # --- ChromaDB and Embedding Model Configuration ---
-CHROMA_HOST = "chroma"
+CHROMA_HOST = "host.docker.internal"
 CHROMA_PORT = 8000
 CHROMA_COLLECTION_NAME = "covid_data_collection_multi_vector"
 EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 with DAG(
-    dag_id="etl-cov-rag-chroma-multi-vector-v2b", 
+    dag_id="etl-cov-rag-chroma-multi-vector-v3h", # <--- Changed DAG ID
     start_date=days_ago(1),
     schedule_interval=timedelta(days=1),
     catchup=False,
@@ -261,18 +261,18 @@ with DAG(
         pg_hook.run(sql_file_logs)
         log.info("Ensured 'file_logs' table exists in PostgreSQL.")
 
-        # --- NEW: Create covid_data_embeddings table ---
-        sql_embeddings_table = """
-        CREATE TABLE IF NOT EXISTS covid_data_embeddings (
-            embedding_id VARCHAR(255) PRIMARY KEY,
-            record_id INTEGER REFERENCES th_covid_data(_id) ON DELETE CASCADE,
-            embedding_vector TEXT,  -- Storing as text, consider vector extension for production
-            embedding_type VARCHAR(50), -- 'location', 'risk', 'demographics'
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-        pg_hook.run(sql_embeddings_table)
-        log.info("Ensured 'covid_data_embeddings' table exists in PostgreSQL.")
+        # # --- NEW: Create covid_data_embeddings table ---
+        # sql_embeddings_table = """
+        # CREATE TABLE IF NOT EXISTS covid_data_embeddings (
+        #     embedding_id VARCHAR(255) PRIMARY KEY,
+        #     record_id INTEGER REFERENCES th_covid_data(_id) ON DELETE CASCADE,
+        #     embedding_vector TEXT,  -- Storing as text, consider vector extension for production
+        #     embedding_type VARCHAR(50), -- 'location', 'risk', 'demographics'
+        #     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        # );
+        # """
+        # pg_hook.run(sql_embeddings_table)
+        # log.info("Ensured 'covid_data_embeddings' table exists in PostgreSQL.")
 
         # --- Alter existing tables if needed ---
         try:
@@ -551,7 +551,8 @@ with DAG(
 
                         # ★★★ 2. CREATE THE PROVINCE CHILD DOCUMENT ★★★
                         if province:
-                            documents.append(province)
+                            # documents.append(province)
+                            documents.append(f"Province of onset: {province}")
                             province_metadata = base_metadata.copy()
                             province_metadata["type"] = "province"
                             metadatas.append(province_metadata)
@@ -559,7 +560,8 @@ with DAG(
 
                         # ★★★ 3. CREATE THE NATIONALITY CHILD DOCUMENT ★★★
                         if nationality:
-                            documents.append(nationality)
+                            # documents.append(nationality)
+                            documents.append(f"Nationality: {nationality}")
                             nationality_metadata = base_metadata.copy()
                             nationality_metadata["type"] = "nationality"
                             metadatas.append(nationality_metadata)
@@ -567,7 +569,8 @@ with DAG(
                             
                         # ★★★ 4. CREATE THE DISTRICT CHILD DOCUMENT ★★★
                         if district:
-                            documents.append(district)
+                            # documents.append(district)
+                            documents.append(f"District of onset: {district}")
                             district_metadata = base_metadata.copy()
                             district_metadata["type"] = "district"
                             metadatas.append(district_metadata)
