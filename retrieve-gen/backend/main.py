@@ -1,25 +1,20 @@
-# ===================================================================
-# File: backend/main.py
-# Purpose: Full RAG backend with FastAPI, ChromaDB, and Gemini,
-#          including debugging helpers and CORS configuration.
-# ===================================================================
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
 
 import textwrap
 import json
+import ast 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from collections import deque
 import google.generativeai as genai
 import chromadb
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 import uvicorn
-from fastapi.middleware.cors import CORSMiddleware # <-- ★★★ 1. IMPORT THIS ★★★
+from fastapi.middleware.cors import CORSMiddleware
 
-# --- Load Configuration & Models ---
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
@@ -27,6 +22,7 @@ CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", 8000))
 CHROMA_COLLECTION_NAME = "covid_data_collection_multi_vector"
 EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+CROSS_ENCODER_MODEL_NAME = 'cross-encoder/ms-marco-MiniLM-L6-v2' 
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 
 # --- Pydantic Models ---
@@ -44,14 +40,13 @@ class ChatResponse(BaseModel):
     structuredAnswer: StructuredAnswer
     context: list[dict]
 
-# --- Lifespan Event Handler ---
 lifespan_globals = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[SYSTEM] Lifespan: Loading SentenceTransformer model...")
     lifespan_globals["sentence_transformer_model"] = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    print("[SYSTEM] Lifespan: Model loaded successfully.")
+    lifespan_globals["cross_encoder_model"] = CrossEncoder(CROSS_ENCODER_MODEL_NAME)
+    print("[SYSTEM] Lifespan: Models loaded successfully.")
     
     print(f"[SYSTEM] Lifespan: Initializing ChromaDB client at {CHROMA_HOST}:{CHROMA_PORT}...")
     lifespan_globals["chroma_client"] = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
@@ -63,51 +58,100 @@ async def lifespan(app: FastAPI):
     lifespan_globals.clear()
     print("[SYSTEM] Application shutdown complete.")
 
-
-# --- FastAPI App Initialization ---
 app = FastAPI(lifespan=lifespan)
 
-
-# --- ★★★ 2. ADD THE CORS MIDDLEWARE BLOCK HERE ★★★ ---
-# This block must be added to allow your frontend (running on localhost:3000)
-# to communicate with your backend (running on localhost:8001).
 origins = [
     "http://localhost",
-    "http://localhost:3000", # The origin for your Next.js app
+    "http://localhost:3000",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"], # Allows all methods (GET, POST, etc.)
-    allow_headers=["*"], # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-# --- ★★★ END OF CORS BLOCK ★★★ ---
 
+def generate_sub_queries_with_gemini(query: str, history_str: str) -> list[str]:
+    """Generates alternative queries using Gemini to broaden the search."""
+    model_genai = genai.GenerativeModel(GEMINI_MODEL_NAME)
+    
+    prompt = f"""Based on the user's query and the conversation history, generate 3 to 5 alternative queries to improve document retrieval.
+    These queries should explore different facets of the original question, including potential synonyms, related concepts, and underlying questions.
+    Return ONLY a Python list of strings in valid Python list format (e.g., ["query 1", "query 2"]).
 
-# --- RAG Core Logic ---
-def retrieve_context_from_chroma(query: str, top_k: int = 5):
-    # ... (rest of your code is unchanged)
-    client = lifespan_globals["chroma_client"]
-    model = lifespan_globals["sentence_transformer_model"]
+    [Conversation History]
+    {history_str if history_str else "No previous conversation."}
+
+    [User's Original Query]
+    "{query}"
+
+    [Example Output]
+    ["alternative query 1", "related concept query", "more specific version of the query"]
+    """
+    
     try:
-        collection = client.get_collection(name=CHROMA_COLLECTION_NAME)
-        query_embedding = model.encode(query, normalize_embeddings=True).tolist()
-        semantic_results = collection.query(query_embeddings=[query_embedding], n_results=top_k, include=['metadatas'])
-
-        final_context = {}
-        if semantic_results and semantic_results.get('metadatas') and semantic_results['metadatas'][0]:
-            for meta in semantic_results['metadatas'][0]:
-                final_context[meta['record_id']] = meta['full_text']
-        
-        return [{"document": text} for text in final_context.values()]
-    except Exception as e:
-        print(f"[ERROR] Error retrieving context from ChromaDB: {e}")
+        response = model_genai.generate_content(prompt)
+        cleaned_response = response.text.strip().replace("```python", "").replace("```", "")
+        sub_queries = ast.literal_eval(cleaned_response)
+        if isinstance(sub_queries, list):
+            return sub_queries
+        return []
+    except (Exception, SyntaxError) as e:
+        print(f"[WARN] Could not generate sub-queries: {e}")
         return []
 
+def retrieve_expanded_context_from_chroma(query: str, history_str: str, top_k: int = 10):
+    """Retrieves context by generating sub-queries and searching for all of them."""
+    client = lifespan_globals["chroma_client"]
+    model = lifespan_globals["sentence_transformer_model"]
+    
+    sub_queries = generate_sub_queries_with_gemini(query, history_str)
+    all_queries = list(set([query] + sub_queries))
+    print(f"[INFO] Performing expanded search with queries: {all_queries}")
+
+    query_embeddings = model.encode(all_queries, normalize_embeddings=True).tolist()
+    
+    try:
+        collection = client.get_collection(name=CHROMA_COLLECTION_NAME)
+        semantic_results = collection.query(
+            query_embeddings=query_embeddings, 
+            n_results=top_k, 
+            include=['metadatas', 'documents']
+        )
+
+        final_context = {}
+        if semantic_results and semantic_results.get('ids'):
+            for i, result_ids_per_query in enumerate(semantic_results['ids']):
+                for j, doc_id in enumerate(result_ids_per_query):
+                    if doc_id not in final_context:
+                        final_context[doc_id] = semantic_results['documents'][i][j]
+                        
+        return list(final_context.values())
+
+    except Exception as e:
+        print(f"[ERROR] Error retrieving expanded context from ChromaDB: {e}")
+        return []
+
+def rerank_documents_with_cross_encoder(query: str, documents: list[str], top_n: int = 5) -> list[dict]:
+    """Re-ranks a list of documents against a query using a Cross-Encoder."""
+    if not documents:
+        return []
+    cross_encoder = lifespan_globals["cross_encoder_model"]
+    
+    # 2. Create pairs (identical to your list comprehension)
+    pairs = [[query, doc] for doc in documents]
+    
+    # 3. Predict scores (the exact same method call as your example)
+    scores = cross_encoder.predict(pairs)
+    
+    # 4. This part just sorts the results and returns the best ones
+    scored_docs = sorted(zip(scores, documents), key=lambda x: x[0], reverse=True)
+    return [{"document": doc} for _, doc in scored_docs[:top_n]]
+
 def generate_response_with_gemini(query: str, context: list, conversation_history: deque):
-    # ... (rest of your code is unchanged)
+    """Generates the final structured JSON response using Gemini."""
     model_genai = genai.GenerativeModel(GEMINI_MODEL_NAME)
     
     history_parts = []
@@ -162,19 +206,36 @@ def generate_response_with_gemini(query: str, context: list, conversation_histor
             "confidence_level": "N/A"
         }
 
-# --- API Endpoint ---
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_handler(request: ChatRequest):
     try:
+        # 1. Prepare conversation history for context
         history = deque(request.history, maxlen=6)
-        context = retrieve_context_from_chroma(request.query)
-        structured_answer = generate_response_with_gemini(request.query, context, history)
-        return ChatResponse(structuredAnswer=structured_answer, context=context)
+        history_parts = []
+        for turn in history:
+            role = "Assistant" if turn.get('role') == 'assistant' else "User"
+            try:
+                text = turn.get('parts', [{}])[0].get('text', '')
+                history_parts.append(f"{role}: {text}")
+            except (IndexError, AttributeError):
+                continue
+        history_str = "\n".join(history_parts)
+
+        # 2. Retrieve a broad set of documents using query expansion
+        initial_documents = retrieve_expanded_context_from_chroma(request.query, history_str, top_k=10)
+
+        # 3. Re-rank the documents to find the most relevant ones
+        reranked_context = rerank_documents_with_cross_encoder(request.query, initial_documents, top_n=5)
+
+        # 4. Generate the final answer with the highly relevant, re-ranked context
+        structured_answer = generate_response_with_gemini(request.query, reranked_context, history)
+        
+        return ChatResponse(structuredAnswer=structured_answer, context=reranked_context)
+
     except Exception as e:
         print(f"[ERROR] Error in chat handler: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- ★★★ Uvicorn Runner for Direct Debugging ★★★ ---
 if __name__ == "__main__":
     print("[SYSTEM] Starting Uvicorn server for direct debugging...")
     uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)
